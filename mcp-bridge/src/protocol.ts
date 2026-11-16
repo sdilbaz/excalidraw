@@ -6,6 +6,17 @@ export const DEFAULT_BRIDGE_HOST = "127.0.0.1";
 export const DEFAULT_BRIDGE_PORT = 3050;
 export const CANVAS_WS_PATH = "/canvas";
 export const MCP_HTTP_PATH = "/mcp";
+/** JSON status for launchers deciding whether a daemon is already running */
+export const HEALTH_PATH = "/health";
+/** held open by each launcher; the daemon stays up while any is open */
+export const LEASE_PATH = "/lease";
+
+export type BridgeHealth = {
+  ok: true;
+  pid: number;
+  leases: number;
+  canvas: { connected: boolean; pageUrl: string | null };
+};
 
 export type CanvasMethod =
   | "getScene"

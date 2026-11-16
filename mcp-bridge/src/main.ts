@@ -1,4 +1,5 @@
 import { installEgressBlock } from "./blockEgress.ts";
+import { parseBooleanEnv, parseIntegerEnv } from "./config.ts";
 import { createLogger, parseLogLevel } from "./logger.ts";
 import { DEFAULT_BRIDGE_HOST, DEFAULT_BRIDGE_PORT } from "./protocol.ts";
 import { startBridgeServer } from "./server.ts";
@@ -8,29 +9,6 @@ const DEFAULT_CANVAS_ORIGINS = [
   "http://127.0.0.1:3001",
 ];
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-
-const parseBooleanEnv = (name: string): boolean => {
-  const value = process.env[name];
-  if (value === undefined || value === "" || value === "false") {
-    return false;
-  }
-  if (value === "true") {
-    return true;
-  }
-  throw new Error(`${name} must be "true" or "false", got "${value}"`);
-};
-
-const parseIntegerEnv = (name: string, fallback: number): number => {
-  const value = process.env[name];
-  if (value === undefined || value === "") {
-    return fallback;
-  }
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(`${name} must be a non-negative integer, got "${value}"`);
-  }
-  return parsed;
-};
 
 const logger = createLogger(parseLogLevel(process.env.LOG_LEVEL));
 

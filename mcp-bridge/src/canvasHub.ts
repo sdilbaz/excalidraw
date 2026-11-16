@@ -29,6 +29,29 @@ type PendingRequest = {
   timer: NodeJS.Timeout;
 };
 
+/**
+ * How the hub brings up a canvas when a request arrives and no app tab is
+ * connected. Without one, such requests fail immediately.
+ */
+export type CanvasOpener = {
+  /** e.g. waits for the dev server, then opens the app URL in a browser */
+  openCanvas: () => Promise<void>;
+  /** how long to let an already open tab reconnect before opening a new one */
+  reconnectGraceMs: number;
+  /** total time a request waits for a canvas to connect */
+  waitMs: number;
+  /** don't open another tab within this long of the previous one */
+  minReopenIntervalMs: number;
+};
+
+export type CanvasHubOptions = {
+  logger: Logger;
+  requestTimeoutMs: number;
+  opener?: CanvasOpener;
+  /** called on every request, for idle tracking */
+  onActivity?: () => void;
+};
+
 export type CanvasStatus = {
   connected: boolean;
   pageUrl: string | null;
@@ -46,6 +69,10 @@ const REPLACED_CLOSE_CODE = 4000;
 export class CanvasHub {
   private readonly logger: Logger;
   private readonly requestTimeoutMs: number;
+  private readonly opener: CanvasOpener | undefined;
+  private readonly onActivity: () => void;
+  private readonly attachWaiters = new Set<(socket: WebSocket) => void>();
+  private lastOpenedAt = 0;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly egressEvents: EgressEvent[] = [];
   private readonly egressHostsSeen = new Set<string>();
@@ -53,9 +80,11 @@ export class CanvasHub {
   private pageUrl: string | null = null;
   private connectedAt: Date | null = null;
 
-  constructor(logger: Logger, requestTimeoutMs: number) {
-    this.logger = logger;
-    this.requestTimeoutMs = requestTimeoutMs;
+  constructor(options: CanvasHubOptions) {
+    this.logger = options.logger;
+    this.requestTimeoutMs = options.requestTimeoutMs;
+    this.opener = options.opener;
+    this.onActivity = options.onActivity ?? (() => undefined);
   }
 
   attach(socket: WebSocket, origin: string): void {
@@ -75,6 +104,10 @@ export class CanvasHub {
     this.connectedAt = new Date();
     this.pageUrl = null;
     this.logger.info("canvas connected", { origin });
+    for (const resolveWaiter of this.attachWaiters) {
+      resolveWaiter(socket);
+    }
+    this.attachWaiters.clear();
 
     socket.on("message", (data) => this.handleMessage(socket, data));
     socket.on("close", (code, reason) => {
@@ -104,19 +137,12 @@ export class CanvasHub {
     return this.egressEvents;
   }
 
-  request<M extends CanvasMethod>(
+  async request<M extends CanvasMethod>(
     method: M,
     params: CanvasParamsByMethod[M],
   ): Promise<unknown> {
-    const socket = this.socket;
-    if (!socket) {
-      return Promise.reject(
-        new Error(
-          "No Excalidraw canvas is connected to the bridge. Start the app with `yarn start` (with VITE_APP_MCP_BRIDGE_URL set) and open it in a browser tab.",
-        ),
-      );
-    }
-
+    this.onActivity();
+    const socket = await this.getOrOpenCanvas();
     const id = randomUUID();
     const message = { type: "request", id, method, params } as BridgeRequest;
 
@@ -134,6 +160,58 @@ export class CanvasHub {
       this.logger.debug("sending canvas request", { id, method });
       socket.send(JSON.stringify(message));
     });
+  }
+
+  /** Resolves with the socket of the next tab to connect, or null on timeout. */
+  private nextAttach(timeoutMs: number): Promise<WebSocket | null> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.attachWaiters.delete(onAttach);
+        resolve(null);
+      }, timeoutMs);
+      const onAttach = (socket: WebSocket) => {
+        clearTimeout(timer);
+        resolve(socket);
+      };
+      this.attachWaiters.add(onAttach);
+    });
+  }
+
+  private async getOrOpenCanvas(): Promise<WebSocket> {
+    if (this.socket) {
+      return this.socket;
+    }
+    const opener = this.opener;
+    if (!opener) {
+      throw new Error(
+        "No Excalidraw canvas is connected to the bridge. Start the app with `yarn start` (with VITE_APP_MCP_BRIDGE_URL set) and open it in a browser tab.",
+      );
+    }
+
+    const startedAt = Date.now();
+    // a tab left open from an earlier bridge run reconnects on its own
+    const reconnected = await this.nextAttach(opener.reconnectGraceMs);
+    if (reconnected) {
+      return reconnected;
+    }
+
+    if (Date.now() - this.lastOpenedAt >= opener.minReopenIntervalMs) {
+      this.lastOpenedAt = Date.now();
+      this.logger.info("no canvas connected; opening the app in a browser");
+      await opener.openCanvas();
+    }
+
+    const remainingMs = opener.waitMs - (Date.now() - startedAt);
+    const opened =
+      this.socket ?? (await this.nextAttach(Math.max(remainingMs, 0)));
+    if (!opened) {
+      throw new Error(
+        `No Excalidraw canvas connected within ${Math.round(
+          opener.waitMs / 1000,
+        )}s after opening the app in a browser. Check that the browser tab loaded, and see the bridge daemon log.`,
+      );
+    }
+    return opened;
   }
 
   close(): void {

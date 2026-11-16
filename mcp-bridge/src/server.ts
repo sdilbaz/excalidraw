@@ -6,13 +6,21 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { WebSocketServer } from "ws";
 
 import { CanvasHub } from "./canvasHub.ts";
-import { CANVAS_WS_PATH, MCP_HTTP_PATH } from "./protocol.ts";
+import { IdleMonitor } from "./idleMonitor.ts";
+import {
+  CANVAS_WS_PATH,
+  HEALTH_PATH,
+  LEASE_PATH,
+  MCP_HTTP_PATH,
+} from "./protocol.ts";
 import { createMcpServer } from "./tools.ts";
 
 import type { AddressInfo } from "node:net";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 
+import type { CanvasOpener } from "./canvasHub.ts";
 import type { Logger } from "./logger.ts";
+import type { BridgeHealth } from "./protocol.ts";
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
@@ -24,6 +32,10 @@ export type BridgeServerOptions = {
   allowedCanvasOrigins: readonly string[];
   requestTimeoutMs: number;
   logger: Logger;
+  /** opens the app when a request arrives with no canvas connected */
+  opener?: CanvasOpener;
+  /** shut down after this long with no leases and no activity */
+  idle?: { idleMs: number; onIdle: () => void };
 };
 
 export type BridgeServer = {
@@ -64,7 +76,20 @@ export const startBridgeServer = async (
   options: BridgeServerOptions,
 ): Promise<BridgeServer> => {
   const { logger } = options;
-  const hub = new CanvasHub(logger, options.requestTimeoutMs);
+  const idleMonitor = options.idle
+    ? new IdleMonitor(options.idle.idleMs, () => {
+        logger.info("idle: no leases or activity, shutting down", {
+          idleMs: options.idle?.idleMs,
+        });
+        options.idle?.onIdle();
+      })
+    : null;
+  const hub = new CanvasHub({
+    logger,
+    requestTimeoutMs: options.requestTimeoutMs,
+    opener: options.opener,
+    onActivity: () => idleMonitor?.touch(),
+  });
   const transports = new Map<string, StreamableHTTPServerTransport>();
   // filled in once listening, since the port may be assigned by the OS
   let allowedHosts: Set<string> = new Set();
@@ -138,6 +163,32 @@ export const startBridgeServer = async (
     await transport.handleRequest(req, res, body);
   };
 
+  const handleHealth = (res: ServerResponse) => {
+    const status = hub.status();
+    const health: BridgeHealth = {
+      ok: true,
+      pid: process.pid,
+      leases: idleMonitor?.leaseCount ?? 0,
+      canvas: { connected: status.connected, pageUrl: status.pageUrl },
+    };
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(health));
+  };
+
+  // The response stays open for the life of the launcher process; the OS
+  // closes the socket when that process exits, however it exits.
+  const handleLease = (req: IncomingMessage, res: ServerResponse) => {
+    idleMonitor?.acquire();
+    logger.info("lease acquired", { leases: idleMonitor?.leaseCount });
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.write("lease held\n");
+    req.socket.setKeepAlive(true);
+    res.on("close", () => {
+      idleMonitor?.release();
+      logger.info("lease released", { leases: idleMonitor?.leaseCount });
+    });
+  };
+
   const httpServer = createServer((req, res) => {
     if (!isAllowedHost(req)) {
       logger.warn("rejected request with unexpected Host header", {
@@ -149,9 +200,24 @@ export const startBridgeServer = async (
 
     const { pathname } = new URL(req.url ?? "/", "http://placeholder");
     if (pathname !== MCP_HTTP_PATH) {
+      if (pathname === HEALTH_PATH || pathname === LEASE_PATH) {
+        // only local processes, never web pages
+        if (req.headers.origin !== undefined || req.method !== "GET") {
+          res.writeHead(403).end("Forbidden");
+          return;
+        }
+        if (pathname === HEALTH_PATH) {
+          handleHealth(res);
+        } else {
+          handleLease(req, res);
+        }
+        return;
+      }
       res.writeHead(404).end("Not found");
       return;
     }
+
+    idleMonitor?.touch();
 
     handleMcpRequest(req, res).catch((error: unknown) => {
       logger.error("MCP request failed", { error });
@@ -212,6 +278,7 @@ export const startBridgeServer = async (
   ]);
 
   const close = async () => {
+    idleMonitor?.stop();
     hub.close();
     await Promise.all(
       [...transports.values()].map((transport) => transport.close()),

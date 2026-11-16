@@ -16,7 +16,8 @@ import type {
 } from "../../mcp-bridge/src/protocol";
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
-const MAX_RECONNECT_DELAY_MS = 10_000;
+// short, so a tab left open reconnects within the bridge's 4s grace period
+const MAX_RECONNECT_DELAY_MS = 3_000;
 // sent by the bridge when a newer tab takes over (see mcp-bridge canvasHub)
 const REPLACED_CLOSE_CODE = 4000;
 

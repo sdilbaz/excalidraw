@@ -11,7 +11,9 @@
     "start": "node src/main.ts",
     "start:blocked": "MCP_BRIDGE_BLOCK_EGRESS=true node src/main.ts",
     "watch-egress": "bash scripts/watch-egress.sh",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "launcher": "node src/launcher.ts",
+    "daemon": "node src/daemon.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
