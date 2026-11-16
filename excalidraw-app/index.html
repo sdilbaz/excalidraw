@@ -130,6 +130,8 @@
     <% } else { %>
     <script>
       window.EXCALIDRAW_ASSET_PATH = window.origin;
+      // the dev server serves every font itself; never fall back to esm.sh
+      window.EXCALIDRAW_ASSET_FALLBACK = false;
     </script>
     <% } %>
 

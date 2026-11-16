@@ -13,6 +13,42 @@ import { MERMAID_CHUNKS_LIST_NAME } from "./data/cacheMermaidChunks";
 
 import type { Plugin, Rollup } from "vite";
 
+// Dev server only, for keeping the local MCP bridge setup (mcp-bridge/) free of
+// outbound traffic:
+// - VITE_APP_EGRESS_BLOCK=true: every response gets a CSP that allows loopback
+//   hosts only, so the tab cannot reach any cloud service.
+// - VITE_APP_EGRESS_WATCH=true or EGRESS_BLOCK=true: the Google Fonts preconnect
+//   hints are dropped. Nothing uses Google Fonts, and preconnects open
+//   connections that neither CSP nor the in-tab egress watcher can see.
+const LOOPBACK_SOURCES =
+  "http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*";
+const LOOPBACK_ONLY_CSP = [
+  `default-src 'self' ${LOOPBACK_SOURCES} data: blob:`,
+  `script-src 'self' ${LOOPBACK_SOURCES} 'unsafe-inline' 'unsafe-eval' blob:`,
+  `style-src 'self' ${LOOPBACK_SOURCES} 'unsafe-inline'`,
+  `worker-src 'self' blob:`,
+].join("; ");
+
+const egressBlockPlugin = (): Plugin => ({
+  name: "excalidraw-egress-block",
+  apply: "serve",
+  configureServer(server) {
+    server.middlewares.use((_req, res, next) => {
+      res.setHeader("Content-Security-Policy", LOOPBACK_ONLY_CSP);
+      next();
+    });
+  },
+});
+
+const stripPreconnectPlugin = (): Plugin => ({
+  name: "excalidraw-strip-preconnect",
+  apply: "serve",
+  transformIndexHtml: {
+    order: "post",
+    handler: (html) => html.replace(/<link\s+rel="preconnect"[^>]*>\s*/g, ""),
+  },
+});
+
 /**
  * Collects into `lazyChunkFileNames` the chunks reachable only via a dynamic
  * import of a module matching `moduleRegex`, so we can exclude them from the
@@ -271,6 +307,13 @@ export default defineConfig(({ mode }) => {
       assetsInlineLimit: 0,
     },
     plugins: [
+      ...(envVars.VITE_APP_EGRESS_BLOCK === "true"
+        ? [egressBlockPlugin()]
+        : []),
+      ...(envVars.VITE_APP_EGRESS_BLOCK === "true" ||
+      envVars.VITE_APP_EGRESS_WATCH === "true"
+        ? [stripPreconnectPlugin()]
+        : []),
       Sitemap({
         hostname: "https://excalidraw.com",
         outDir: "build",

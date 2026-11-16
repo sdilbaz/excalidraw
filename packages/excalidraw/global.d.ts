@@ -2,6 +2,8 @@ interface Window {
   ClipboardItem: any;
   __EXCALIDRAW_SHA__: string | undefined;
   EXCALIDRAW_ASSET_PATH: string | string[] | undefined;
+  /** `false` stops bundled fonts from falling back to the esm.sh CDN */
+  EXCALIDRAW_ASSET_FALLBACK: boolean | undefined;
   EXCALIDRAW_THROTTLE_RENDER: boolean | undefined;
   DEBUG_FRACTIONAL_INDICES: boolean | undefined;
   EXCALIDRAW_EXPORT_SOURCE: string;

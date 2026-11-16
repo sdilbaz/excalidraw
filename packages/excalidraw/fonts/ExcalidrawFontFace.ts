@@ -163,8 +163,17 @@ export class ExcalidrawFontFace {
       });
     }
 
-    // fallback url for bundled fonts
-    urls.push(new URL(assetUrl, ExcalidrawFontFace.ASSETS_FALLBACK_URL));
+    // fallback url for bundled fonts, unless the host opted out to keep all
+    // font requests on its own asset path
+    if (window.EXCALIDRAW_ASSET_FALLBACK !== false) {
+      urls.push(new URL(assetUrl, ExcalidrawFontFace.ASSETS_FALLBACK_URL));
+    }
+
+    if (!urls.length) {
+      throw new Error(
+        `Excalidraw: no URL to load font asset "${assetUrl}" from: window.EXCALIDRAW_ASSET_FALLBACK is false, so window.EXCALIDRAW_ASSET_PATH must be set.`,
+      );
+    }
 
     return urls;
   }

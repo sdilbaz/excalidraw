@@ -1,0 +1,24 @@
+{
+  "name": "@excalidraw/mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-only MCP server that lets Claude sessions drive the Excalidraw dev app running on this machine.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "start:blocked": "MCP_BRIDGE_BLOCK_EGRESS=true node src/main.ts",
+    "watch-egress": "bash scripts/watch-egress.sh",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "ws": "8.18.3",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
+  }
+}

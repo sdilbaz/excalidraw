@@ -125,6 +125,8 @@ For self-hosting, copy the contents of `node_modules/@excalidraw/excalidraw/dist
 </script>
 ```
 
+Fonts that fail to load from your path still fall back to the CDN. To keep every font request on your own server, also set `window.EXCALIDRAW_ASSET_FALLBACK = false`.
+
 ## Demo
 
 Try the [CodeSandbox example](https://codesandbox.io/p/sandbox/github/excalidraw/excalidraw/tree/master/examples/with-script-in-browser).

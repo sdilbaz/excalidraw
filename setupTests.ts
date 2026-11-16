@@ -96,6 +96,8 @@ Object.defineProperty(document, "fonts", {
 
 Object.defineProperty(window, "EXCALIDRAW_ASSET_PATH", {
   value: `file://${__dirname}/`,
+  // tests of the font URL resolution set their own asset path
+  writable: true,
 });
 
 // mock the font fetch only, so that everything else, as font subsetting, can run inside of the (snapshot) tests

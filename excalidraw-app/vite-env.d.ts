@@ -38,6 +38,14 @@ interface ImportMetaEnv {
 
   VITE_APP_GIT_SHA: string;
 
+  // dev-only: WebSocket URL of the local MCP bridge (mcp-bridge/), e.g.
+  // ws://127.0.0.1:3050/canvas. Empty disables the bridge.
+  VITE_APP_MCP_BRIDGE_URL: string;
+  // dev-only: "true" reports requests from the tab to non-local hosts
+  VITE_APP_EGRESS_WATCH: string;
+  // dev-only: "true" serves the app with a CSP that only allows loopback hosts
+  VITE_APP_EGRESS_BLOCK: string;
+
   MODE: string;
 
   DEV: string;
