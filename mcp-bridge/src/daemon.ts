@@ -1,6 +1,7 @@
-// Background process started on demand by launcher.ts: runs the bridge and
-// the Excalidraw dev server, opens the app when an agent needs a canvas, and
-// exits once no launcher has held a lease for MCP_BRIDGE_IDLE_MINUTES.
+// Background process started on demand by launcher.ts: runs the bridge, and
+// on the first request that needs a canvas starts (or reuses) the Excalidraw
+// dev server and opens the app. Exits once no launcher has held a lease for
+// MCP_BRIDGE_IDLE_MINUTES.
 //
 // Port 3050 doubles as the lock: if another daemon already holds it, this one
 // exits straight away, so concurrent launchers can't start two.
@@ -56,12 +57,42 @@ const shutdown = async (reason: string, exitCode: number) => {
   process.exit(exitCode);
 };
 
-// resolved once the dev server has been started or found, so a request that
-// arrives first still waits for it before opening the app
-let resolveDevServer: (server: DevServer) => void;
-const devServerStarted = new Promise<DevServer>((resolveStarted) => {
-  resolveDevServer = resolveStarted;
-});
+// Started on the first request that needs a canvas, not with the daemon:
+// every agent session starts a launcher, and most never touch Excalidraw.
+// A failed start is reported to that request and retried on the next one.
+let devServerStarting: Promise<DevServer> | null = null;
+
+const ensureDevServer = (): Promise<DevServer> => {
+  devServerStarting ??= (async () => {
+    const server = await startDevServer({
+      port: devPort,
+      repoRoot: REPO_ROOT,
+      logFile: resolve(runDir, "dev-server.log"),
+      logger,
+      command: parseCommandEnv("MCP_BRIDGE_DEV_COMMAND") ?? undefined,
+      startupTimeoutMs: parseIntegerEnv(
+        "MCP_BRIDGE_DEV_STARTUP_TIMEOUT_MS",
+        180_000,
+      ),
+    });
+    devServer = server;
+    void server.exited.then(() => {
+      if (devServer === server) {
+        logger.warn("dev server exited; it restarts on the next request");
+        devServer = null;
+        devServerStarting = null;
+      }
+    });
+    await server.ready;
+    logger.info("dev server ready", { url: server.url });
+    return server;
+  })().catch((error: unknown) => {
+    logger.error("dev server failed to start", { error });
+    devServerStarting = null;
+    throw error;
+  });
+  return devServerStarting;
+};
 
 try {
   bridge = await startBridgeServer({
@@ -72,8 +103,7 @@ try {
     logger,
     opener: {
       openCanvas: async () => {
-        const server = await devServerStarted;
-        await server.ready;
+        const server = await ensureDevServer();
         await openInBrowser(server.url, openCommand);
       },
       reconnectGraceMs: parseIntegerEnv("MCP_BRIDGE_RECONNECT_GRACE_MS", 4_000),
@@ -100,26 +130,3 @@ logger.info("daemon started", {
 
 process.on("SIGINT", () => void shutdown("SIGINT", 0));
 process.on("SIGTERM", () => void shutdown("SIGTERM", 0));
-
-try {
-  devServer = await startDevServer({
-    port: devPort,
-    repoRoot: REPO_ROOT,
-    logFile: resolve(runDir, "dev-server.log"),
-    logger,
-    command: parseCommandEnv("MCP_BRIDGE_DEV_COMMAND") ?? undefined,
-    startupTimeoutMs: parseIntegerEnv(
-      "MCP_BRIDGE_DEV_STARTUP_TIMEOUT_MS",
-      180_000,
-    ),
-  });
-  resolveDevServer!(devServer);
-  void devServer.exited.then(() => shutdown("dev server exited", 1));
-  await devServer.ready;
-  logger.info("dev server ready", { url: devServer.url });
-} catch (error) {
-  // without the app there is nothing for agents to edit: fail loudly, which
-  // also drops every launcher's lease so their sessions report the failure
-  logger.error("dev server failed", { error });
-  await shutdown("dev server failed", 1);
-}

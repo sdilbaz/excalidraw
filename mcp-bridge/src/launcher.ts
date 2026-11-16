@@ -13,6 +13,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { bridgePort, ensureRunDir, parseIntegerEnv } from "./config.ts";
+import { getIfServing } from "./httpProbe.ts";
 import { createLogger, parseLogLevel } from "./logger.ts";
 import {
   DEFAULT_BRIDGE_HOST,
@@ -33,31 +34,17 @@ const daemonStartTimeoutMs = parseIntegerEnv(
   30_000,
 );
 
-// refused: nothing is listening; reset: the server closed while answering
-// (e.g. it is shutting down). Either way it isn't serving.
-const NOT_SERVING_CODES = new Set(["ECONNREFUSED", "ECONNRESET"]);
-const isNotServing = (error: unknown) =>
-  error instanceof TypeError &&
-  NOT_SERVING_CODES.has(
-    (error.cause as { code?: string } | undefined)?.code ?? "",
-  );
-
 const fetchHealth = async (): Promise<BridgeHealth | null> => {
-  let response: Response;
-  try {
-    response = await fetch(`${baseUrl}${HEALTH_PATH}`);
-  } catch (error) {
-    if (isNotServing(error)) {
-      return null;
-    }
-    throw error;
+  const response = await getIfServing(`${baseUrl}${HEALTH_PATH}`);
+  if (!response) {
+    return null;
   }
-  if (!response.ok) {
+  if (response.status !== 200) {
     throw new Error(
       `Port ${port} answered ${response.status} on ${HEALTH_PATH}; is something other than the bridge using it?`,
     );
   }
-  return (await response.json()) as BridgeHealth;
+  return JSON.parse(response.body) as BridgeHealth;
 };
 
 const ensureDaemon = async (): Promise<void> => {

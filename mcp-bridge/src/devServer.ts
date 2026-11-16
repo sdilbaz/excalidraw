@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { getIfServing } from "./httpProbe.ts";
+
 import type { ChildProcess } from "node:child_process";
 
 import type { Logger } from "./logger.ts";
@@ -23,27 +25,14 @@ export type DevServer = {
 
 type ProbeResult = "ours" | "other" | "down";
 
-// refused: nothing is listening; reset: the server closed while answering
-// (e.g. it is shutting down). Either way it isn't serving.
-const NOT_SERVING_CODES = new Set(["ECONNREFUSED", "ECONNRESET"]);
-const isNotServing = (error: unknown) =>
-  error instanceof TypeError &&
-  NOT_SERVING_CODES.has(
-    (error.cause as { code?: string } | undefined)?.code ?? "",
-  );
-
 export const probeDevServer = async (url: string): Promise<ProbeResult> => {
-  let response: Response;
-  try {
-    response = await fetch(url);
-  } catch (error) {
-    if (isNotServing(error)) {
-      return "down";
-    }
-    throw error;
+  const response = await getIfServing(url);
+  if (!response) {
+    return "down";
   }
-  const body = await response.text();
-  return response.ok && body.includes(APP_MARKER) ? "ours" : "other";
+  return response.status === 200 && response.body.includes(APP_MARKER)
+    ? "ours"
+    : "other";
 };
 
 export type DevServerOptions = {

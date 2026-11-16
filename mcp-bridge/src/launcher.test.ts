@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { probeDevServer } from "./devServer.ts";
+import { getIfServing } from "./httpProbe.ts";
 import {
   connectFakeCanvas,
   getFreePort,
@@ -26,18 +27,8 @@ const FIXTURES = join(SRC, "testFixtures");
 const IDLE_MS = 1500;
 
 const fetchHealth = async (port: number): Promise<BridgeHealth | null> => {
-  try {
-    return (await (
-      await fetch(`http://127.0.0.1:${port}/health`)
-    ).json()) as BridgeHealth;
-  } catch (error) {
-    // refused: nothing listening; reset: the daemon closed mid-request
-    const code = (error as { cause?: { code?: string } }).cause?.code;
-    if (code === "ECONNREFUSED" || code === "ECONNRESET") {
-      return null;
-    }
-    throw error;
-  }
+  const response = await getIfServing(`http://127.0.0.1:${port}/health`);
+  return response ? (JSON.parse(response.body) as BridgeHealth) : null;
 };
 
 describe("launcher + daemon", () => {
@@ -85,6 +76,17 @@ describe("launcher + daemon", () => {
 
   const daemonLog = () => readFileSync(join(runDir, "daemon.log"), "utf8");
 
+  /** Plays the browser: connects a fake canvas once the app is "opened". */
+  const connectCanvasWhenOpened = async () => {
+    await waitFor(() => existsSync(openedFile), 10_000, "app opened");
+    const canvas = await connectFakeCanvas(
+      `ws://127.0.0.1:${bridgePort}/canvas`,
+      `http://localhost:${devPort}`,
+      okReply({ elements: [] }),
+    );
+    cleanups.push(() => canvas.socket.close());
+  };
+
   beforeEach(async () => {
     runDir = mkdtempSync(join(tmpdir(), "mcp-bridge-launcher-"));
     openedFile = join(runDir, "opened.txt");
@@ -113,16 +115,11 @@ describe("launcher + daemon", () => {
   it("starts the daemon on demand, shares it, opens the app, and stops when idle", async () => {
     expect(await fetchHealth(bridgePort)).toBeNull();
 
-    // first agent: starts the daemon and the dev server
+    // first agent: starts the daemon, but not the dev server yet
     const first = await connectAgent();
     const health = await fetchHealth(bridgePort);
     expect(health).toMatchObject({ ok: true, leases: 1 });
-    await waitFor(
-      async () =>
-        (await probeDevServer(`http://localhost:${devPort}/`)) === "ours",
-      10_000,
-      "dev server",
-    );
+    expect(await probeDevServer(`http://localhost:${devPort}/`)).toBe("down");
 
     // no tab yet: the first tool call opens the app and waits for it
     const pending = first.callTool({ name: "get_scene", arguments: {} });
@@ -142,6 +139,8 @@ describe("launcher + daemon", () => {
       type: "text",
       text: expect.stringContaining("fake canvas"),
     });
+    // the tool call started the dev server
+    expect(await probeDevServer(`http://localhost:${devPort}/`)).toBe("ours");
 
     // second agent: reuses the same daemon
     const second = await connectAgent();
@@ -200,17 +199,16 @@ describe("launcher + daemon", () => {
       "existing dev server",
     );
 
-    await connectAgent();
+    const agent = await connectAgent();
+    const pending = agent.callTool({ name: "get_scene", arguments: {} });
+    await connectCanvasWhenOpened();
 
-    await waitFor(
-      () => /reusing the dev server/.test(daemonLog()),
-      5000,
-      "reuse log",
-    );
+    expect(((await pending) as CallToolResult).isError).toBeFalsy();
+    expect(daemonLog()).toMatch(/reusing the dev server/);
     expect(daemonLog()).not.toMatch(/started dev server/);
   }, 20_000);
 
-  it("fails loudly when the dev port is taken by something else", async () => {
+  it("reports a taken dev port as a tool error and keeps the daemon up", async () => {
     const other = spawn(process.execPath, [
       join(FIXTURES, "otherServer.mjs"),
       String(devPort),
@@ -223,32 +221,18 @@ describe("launcher + daemon", () => {
       "other server",
     );
 
-    const client = new Client({ name: "agent", version: "0" });
-    const closed = new Promise<void>((resolveClosed) => {
-      client.onclose = () => resolveClosed();
-    });
-    const transport = new StdioClientTransport({
-      command: process.execPath,
-      args: [resolve(SRC, "launcher.ts")],
-      env: env(),
-      stderr: "ignore",
-    });
-    // the launcher may exit before or after the handshake completes
-    const connected = client.connect(transport).then(
-      () => "connected",
-      () => "failed",
-    );
+    const agent = await connectAgent();
 
-    await Promise.race([
-      closed,
-      connected.then((state) => state === "failed" && undefined),
-    ]);
-    await waitFor(
-      async () => !(await fetchHealth(bridgePort)),
-      10_000,
-      "daemon exit",
+    const result = (await agent.callTool({
+      name: "get_scene",
+      arguments: {},
+    })) as CallToolResult;
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(
+      /isn't the Excalidraw dev server/,
     );
-    expect(daemonLog()).toMatch(/isn't the Excalidraw dev server/);
-    await client.close();
+    // the daemon stays up for other tools and retries on the next call
+    expect(await fetchHealth(bridgePort)).toMatchObject({ leases: 1 });
   }, 20_000);
 });
